@@ -4,17 +4,18 @@ Lance en local : uvicorn main:app --reload
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime, timezone
 from enum import Enum
 import sqlite3
 import os
-
+ 
 DB_PATH = os.path.join(os.path.dirname(__file__), "tickets.db")
-
+ 
 app = FastAPI(title="Ticket System API", version="1.0.0")
-
+ 
 # Autorise le frontend (hébergé ailleurs) à appeler cette API
 app.add_middleware(
     CORSMiddleware,
@@ -23,28 +24,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
+ 
+ 
 class Status(str, Enum):
     open = "open"
     in_progress = "in_progress"
     resolved = "resolved"
     closed = "closed"
-
-
+ 
+ 
 class Priority(str, Enum):
     low = "low"
     medium = "medium"
     high = "high"
     urgent = "urgent"
-
-
+ 
+ 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
-
+ 
+ 
 def init_db():
     conn = get_db()
     conn.execute("""
@@ -74,11 +75,11 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-
-
+ 
+ 
 init_db()
-
-
+ 
+ 
 class TicketCreate(BaseModel):
     title: str = Field(..., min_length=3, max_length=200)
     description: str = Field(..., min_length=3)
@@ -86,8 +87,8 @@ class TicketCreate(BaseModel):
     requester_email: str
     category: str = "general"
     priority: Priority = Priority.medium
-
-
+ 
+ 
 class TicketUpdate(BaseModel):
     status: Optional[Status] = None
     priority: Optional[Priority] = None
@@ -95,26 +96,26 @@ class TicketUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
-
-
+ 
+ 
 class CommentCreate(BaseModel):
     author: str
     body: str
-
-
+ 
+ 
 def row_to_dict(row):
     return dict(row)
-
-
+ 
+ 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
-
-
-@app.get("/")
+ 
+ 
+@app.get("/api")
 def root():
     return {"message": "Ticket System API", "docs": "/docs"}
-
-
+ 
+ 
 @app.post("/tickets", status_code=201)
 def create_ticket(payload: TicketCreate):
     conn = get_db()
@@ -131,8 +132,8 @@ def create_ticket(payload: TicketCreate):
     row = conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
     conn.close()
     return row_to_dict(row)
-
-
+ 
+ 
 @app.get("/tickets")
 def list_tickets(
     status: Optional[Status] = None,
@@ -159,8 +160,8 @@ def list_tickets(
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [row_to_dict(r) for r in rows]
-
-
+ 
+ 
 @app.get("/tickets/{ticket_id}")
 def get_ticket(ticket_id: int):
     conn = get_db()
@@ -175,8 +176,8 @@ def get_ticket(ticket_id: int):
     result = row_to_dict(row)
     result["comments"] = [row_to_dict(c) for c in comments]
     return result
-
-
+ 
+ 
 @app.put("/tickets/{ticket_id}")
 def update_ticket(ticket_id: int, payload: TicketUpdate):
     conn = get_db()
@@ -196,8 +197,8 @@ def update_ticket(ticket_id: int, payload: TicketUpdate):
     row = conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
     conn.close()
     return row_to_dict(row)
-
-
+ 
+ 
 @app.delete("/tickets/{ticket_id}", status_code=204)
 def delete_ticket(ticket_id: int):
     conn = get_db()
@@ -210,8 +211,8 @@ def delete_ticket(ticket_id: int):
     conn.commit()
     conn.close()
     return None
-
-
+ 
+ 
 @app.post("/tickets/{ticket_id}/comments", status_code=201)
 def add_comment(ticket_id: int, payload: CommentCreate):
     conn = get_db()
@@ -230,8 +231,8 @@ def add_comment(ticket_id: int, payload: CommentCreate):
     crow = conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone()
     conn.close()
     return row_to_dict(crow)
-
-
+ 
+ 
 @app.get("/stats")
 def get_stats():
     conn = get_db()
@@ -244,8 +245,12 @@ def get_stats():
         "by_status": {r["status"]: r["c"] for r in by_status},
         "by_priority": {r["priority"]: r["c"] for r in by_priority},
     }
-
-
+ 
+ 
+# Sert la page web (frontend) directement depuis ce même serveur.
+# IMPORTANT : ce mount doit rester en DERNIER, après toutes les routes /tickets et /stats.
+app.mount("/", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static"), html=True), name="static")
+ 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
