@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Système de Tickets</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: system-ui, sans-serif; }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+  .status-open { background:#dbeafe; color:#1e40af; }
+  .status-in_progress { background:#fef3c7; color:#92400e; }
+  .status-resolved { background:#dcfce7; color:#166534; }
+  .status-closed { background:#e5e7eb; color:#374151; }
+  .prio-low { background:#f3f4f6; color:#4b5563; }
+  .prio-medium { background:#e0e7ff; color:#3730a3; }
+  .prio-high { background:#fed7aa; color:#9a3412; }
+  .prio-urgent { background:#fecaca; color:#991b1b; }
+</style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+
+<div class="max-w-6xl mx-auto p-6">
+  <header class="flex justify-between items-center mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-800">🎫 Système de Tickets</h1>
+      <p class="text-sm text-slate-500">Créez, suivez et gérez vos tickets de support</p>
+    </div>
+    <button id="newTicketBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium">
+      + Nouveau ticket
+    </button>
+  </header>
+
+  <!-- Config API -->
+  <div class="bg-white rounded-lg p-3 mb-4 flex items-center gap-2 text-sm border border-slate-200">
+    <span class="text-slate-500">URL de l'API :</span>
+    <input id="apiUrlInput" class="flex-1 border rounded px-2 py-1" />
+    <button id="saveApiUrl" class="bg-slate-700 text-white px-3 py-1 rounded">Enregistrer</button>
+    <span id="apiStatus" class="text-xs"></span>
+  </div>
+
+  <!-- Stats -->
+  <div id="stats" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6"></div>
+
+  <!-- Filtres -->
+  <div class="flex flex-wrap gap-2 mb-4">
+    <input id="searchInput" placeholder="Rechercher..." class="border rounded px-3 py-2 text-sm flex-1 min-w-[180px]" />
+    <select id="statusFilter" class="border rounded px-3 py-2 text-sm">
+      <option value="">Tous les statuts</option>
+      <option value="open">Ouvert</option>
+      <option value="in_progress">En cours</option>
+      <option value="resolved">Résolu</option>
+      <option value="closed">Fermé</option>
+    </select>
+    <select id="priorityFilter" class="border rounded px-3 py-2 text-sm">
+      <option value="">Toutes priorités</option>
+      <option value="low">Basse</option>
+      <option value="medium">Moyenne</option>
+      <option value="high">Haute</option>
+      <option value="urgent">Urgente</option>
+    </select>
+  </div>
+
+  <!-- Liste -->
+  <div id="ticketList" class="space-y-2"></div>
+</div>
+
+<!-- Modal nouveau ticket -->
+<div id="newModal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+  <div class="bg-white rounded-xl p-6 w-full max-w-lg">
+    <h2 class="text-lg font-bold mb-4">Nouveau ticket</h2>
+    <form id="ticketForm" class="space-y-3">
+      <input required name="title" placeholder="Titre" class="w-full border rounded px-3 py-2" />
+      <textarea required name="description" placeholder="Description" class="w-full border rounded px-3 py-2" rows="3"></textarea>
+      <div class="grid grid-cols-2 gap-3">
+        <input required name="requester_name" placeholder="Votre nom" class="border rounded px-3 py-2" />
+        <input required type="email" name="requester_email" placeholder="Votre email" class="border rounded px-3 py-2" />
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <input name="category" placeholder="Catégorie (ex: facturation)" class="border rounded px-3 py-2" />
+        <select name="priority" class="border rounded px-3 py-2">
+          <option value="low">Basse</option>
+          <option value="medium" selected>Moyenne</option>
+          <option value="high">Haute</option>
+          <option value="urgent">Urgente</option>
+        </select>
+      </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button type="button" id="cancelNew" class="px-4 py-2 rounded border">Annuler</button>
+        <button type="submit" class="px-4 py-2 rounded bg-indigo-600 text-white">Créer</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal détail ticket -->
+<div id="detailModal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+  <div class="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+    <div id="detailContent"></div>
+    <button id="closeDetail" class="mt-4 px-4 py-2 rounded border">Fermer</button>
+  </div>
+</div>
+
+<script>
+// ---- Configuration ----
+const DEFAULT_API_URL = "http://localhost:8000";
+let API_URL = localStorage.getItem("ticket_api_url") || DEFAULT_API_URL;
+
+const $ = (sel) => document.querySelector(sel);
+const apiUrlInput = $("#apiUrlInput");
+apiUrlInput.value = API_URL;
+
+$("#saveApiUrl").addEventListener("click", () => {
+  API_URL = apiUrlInput.value.trim().replace(/\/$/, "");
+  localStorage.setItem("ticket_api_url", API_URL);
+  checkApi();
+  loadAll();
+});
+
+async function checkApi() {
+  const statusEl = $("#apiStatus");
+  try {
+    const res = await fetch(`${API_URL}/`);
+    if (res.ok) {
+      statusEl.textContent = "✅ connecté";
+      statusEl.className = "text-xs text-green-600";
+    } else throw new Error();
+  } catch {
+    statusEl.textContent = "❌ inaccessible";
+    statusEl.className = "text-xs text-red-600";
+  }
+}
+
+// ---- API helpers ----
+async function apiGet(path) {
+  const res = await fetch(`${API_URL}${path}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+async function apiSend(path, method, body) {
+  const res = await fetch(`${API_URL}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.status === 204 ? null : res.json();
+}
+
+// ---- Rendu ----
+function statusLabel(s) {
+  return { open: "Ouvert", in_progress: "En cours", resolved: "Résolu", closed: "Fermé" }[s] || s;
+}
+function prioLabel(p) {
+  return { low: "Basse", medium: "Moyenne", high: "Haute", urgent: "Urgente" }[p] || p;
+}
+
+function renderStats(stats) {
+  $("#stats").innerHTML = `
+    <div class="bg-white rounded-lg p-4 border"><div class="text-2xl font-bold">${stats.total}</div><div class="text-xs text-slate-500">Total</div></div>
+    <div class="bg-white rounded-lg p-4 border"><div class="text-2xl font-bold text-blue-600">${stats.by_status.open || 0}</div><div class="text-xs text-slate-500">Ouverts</div></div>
+    <div class="bg-white rounded-lg p-4 border"><div class="text-2xl font-bold text-amber-600">${stats.by_status.in_progress || 0}</div><div class="text-xs text-slate-500">En cours</div></div>
+    <div class="bg-white rounded-lg p-4 border"><div class="text-2xl font-bold text-green-600">${stats.by_status.resolved || 0}</div><div class="text-xs text-slate-500">Résolus</div></div>
+  `;
+}
+
+function renderTickets(tickets) {
+  const list = $("#ticketList");
+  if (!tickets.length) {
+    list.innerHTML = `<div class="text-center text-slate-400 py-10">Aucun ticket trouvé</div>`;
+    return;
+  }
+  list.innerHTML = tickets.map(t => `
+    <div class="bg-white border rounded-lg p-4 flex justify-between items-center hover:shadow cursor-pointer" data-id="${t.id}">
+      <div>
+        <div class="font-semibold text-slate-800">#${t.id} — ${escapeHtml(t.title)}</div>
+        <div class="text-sm text-slate-500">${escapeHtml(t.requester_name)} · ${new Date(t.created_at).toLocaleString('fr-FR')}</div>
+      </div>
+      <div class="flex gap-2">
+        <span class="badge prio-${t.priority}">${prioLabel(t.priority)}</span>
+        <span class="badge status-${t.status}">${statusLabel(t.status)}</span>
+      </div>
+    </div>
+  `).join("");
+
+  list.querySelectorAll("[data-id]").forEach(el => {
+    el.addEventListener("click", () => openDetail(el.dataset.id));
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ---- Chargement ----
+async function loadAll() {
+  try {
+    const params = new URLSearchParams();
+    const status = $("#statusFilter").value;
+    const priority = $("#priorityFilter").value;
+    const search = $("#searchInput").value;
+    if (status) params.set("status", status);
+    if (priority) params.set("priority", priority);
+    if (search) params.set("search", search);
+
+    const [tickets, stats] = await Promise.all([
+      apiGet(`/tickets?${params.toString()}`),
+      apiGet(`/stats`),
+    ]);
+    renderTickets(tickets);
+    renderStats(stats);
+  } catch (e) {
+    $("#ticketList").innerHTML = `<div class="text-center text-red-500 py-10">Impossible de charger les tickets. Vérifiez l'URL de l'API ci-dessus.</div>`;
+  }
+}
+
+// ---- Détail / mise à jour ----
+async function openDetail(id) {
+  const t = await apiGet(`/tickets/${id}`);
+  $("#detailContent").innerHTML = `
+    <h2 class="text-lg font-bold mb-1">#${t.id} — ${escapeHtml(t.title)}</h2>
+    <p class="text-sm text-slate-500 mb-3">${escapeHtml(t.requester_name)} (${escapeHtml(t.requester_email)})</p>
+    <p class="mb-4">${escapeHtml(t.description)}</p>
+
+    <div class="grid grid-cols-2 gap-3 mb-4">
+      <div>
+        <label class="text-xs text-slate-500">Statut</label>
+        <select id="editStatus" class="w-full border rounded px-2 py-1">
+          ${["open","in_progress","resolved","closed"].map(s => `<option value="${s}" ${s===t.status?"selected":""}>${statusLabel(s)}</option>`).join("")}
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Priorité</label>
+        <select id="editPriority" class="w-full border rounded px-2 py-1">
+          ${["low","medium","high","urgent"].map(p => `<option value="${p}" ${p===t.priority?"selected":""}>${prioLabel(p)}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <button id="saveTicket" class="bg-indigo-600 text-white px-3 py-1.5 rounded mb-4">Enregistrer les modifications</button>
+    <button id="deleteTicket" class="bg-red-50 text-red-600 px-3 py-1.5 rounded mb-4 ml-2">Supprimer</button>
+
+    <h3 class="font-semibold mt-4 mb-2">Commentaires</h3>
+    <div id="commentsList" class="space-y-2 mb-3">
+      ${t.comments.map(c => `
+        <div class="bg-slate-50 rounded p-2 text-sm">
+          <b>${escapeHtml(c.author)}</b> — <span class="text-slate-400">${new Date(c.created_at).toLocaleString('fr-FR')}</span>
+          <div>${escapeHtml(c.body)}</div>
+        </div>
+      `).join("") || '<p class="text-sm text-slate-400">Aucun commentaire</p>'}
+    </div>
+    <form id="commentForm" class="flex gap-2">
+      <input required name="author" placeholder="Votre nom" class="border rounded px-2 py-1 w-32" />
+      <input required name="body" placeholder="Ajouter un commentaire..." class="border rounded px-2 py-1 flex-1" />
+      <button class="bg-slate-700 text-white px-3 py-1 rounded">Envoyer</button>
+    </form>
+  `;
+  $("#detailModal").classList.remove("hidden");
+
+  $("#saveTicket").addEventListener("click", async () => {
+    await apiSend(`/tickets/${id}`, "PUT", {
+      status: $("#editStatus").value,
+      priority: $("#editPriority").value,
+    });
+    $("#detailModal").classList.add("hidden");
+    loadAll();
+  });
+
+  $("#deleteTicket").addEventListener("click", async () => {
+    if (!confirm("Supprimer ce ticket ?")) return;
+    await apiSend(`/tickets/${id}`, "DELETE");
+    $("#detailModal").classList.add("hidden");
+    loadAll();
+  });
+
+  $("#commentForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await apiSend(`/tickets/${id}/comments`, "POST", {
+      author: fd.get("author"),
+      body: fd.get("body"),
+    });
+    openDetail(id);
+  });
+}
+
+// ---- Événements ----
+$("#newTicketBtn").addEventListener("click", () => $("#newModal").classList.remove("hidden"));
+$("#cancelNew").addEventListener("click", () => $("#newModal").classList.add("hidden"));
+$("#closeDetail").addEventListener("click", () => $("#detailModal").classList.add("hidden"));
+
+$("#ticketForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  await apiSend("/tickets", "POST", {
+    title: fd.get("title"),
+    description: fd.get("description"),
+    requester_name: fd.get("requester_name"),
+    requester_email: fd.get("requester_email"),
+    category: fd.get("category") || "general",
+    priority: fd.get("priority"),
+  });
+  e.target.reset();
+  $("#newModal").classList.add("hidden");
+  loadAll();
+});
+
+["statusFilter","priorityFilter"].forEach(id => $("#" + id).addEventListener("change", loadAll));
+let searchTimeout;
+$("#searchInput").addEventListener("input", () => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(loadAll, 300);
+});
+
+// ---- Démarrage ----
+checkApi();
+loadAll();
+</script>
+</body>
+</html>
